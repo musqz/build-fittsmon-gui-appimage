@@ -1,0 +1,155 @@
+#!/bin/bash
+# -------------------------------------------------------------------
+# build-fittsmon-gui-appimage
+# Builds an AppImage for fittsmon-gui (Python3/GTK3)
+# Relies on system Python3 and GTK3 — no runtime bundling
+# -------------------------------------------------------------------
+
+set -euo pipefail
+
+# -----------------------------
+# Variables
+# -----------------------------
+REPO_URL="https://github.com/musqz/fittsmon-gui.git"
+WORKDIR="$PWD/fittsmon-gui-build"
+APPDIR="$WORKDIR/AppDir"
+
+# -----------------------------
+# Step 0: Clone or update repo
+# -----------------------------
+if [ ! -d "$WORKDIR/fittsmon-gui" ]; then
+    echo "Cloning fittsmon-gui repo..."
+    git clone "$REPO_URL" "$WORKDIR/fittsmon-gui"
+else
+    echo "Updating existing fittsmon-gui repo..."
+    cd "$WORKDIR/fittsmon-gui"
+    git pull
+fi
+
+cd "$WORKDIR/fittsmon-gui"
+
+# -----------------------------
+# Step 1: Read version from git
+# -----------------------------
+VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0")
+VERSION_CLEAN=$(echo "$VERSION" | sed 's/^v//' | tr ' ()' '_' | tr -s '_')
+
+echo "Building fittsmon-gui AppImage version $VERSION_CLEAN"
+
+# -----------------------------
+# Step 2: Create AppDir structure
+# -----------------------------
+echo "Creating AppDir structure..."
+rm -rf "$APPDIR"
+mkdir -p "$APPDIR/usr/bin" \
+         "$APPDIR/usr/share/applications" \
+         "$APPDIR/usr/share/icons/hicolor/scalable/apps" \
+         "$APPDIR/usr/share/man/man1" \
+         "$APPDIR/usr/share/metainfo"
+
+# -----------------------------
+# Step 3: Install Python script
+# -----------------------------
+cp fittsmon-gui.py "$APPDIR/usr/bin/fittsmon-gui"
+chmod +x "$APPDIR/usr/bin/fittsmon-gui"
+
+# -----------------------------
+# Step 4: Install man page
+# -----------------------------
+if [ -f fittsmon-gui.1 ]; then
+    cp fittsmon-gui.1 "$APPDIR/usr/share/man/man1/"
+else
+    echo "WARNING: No man page found!"
+fi
+
+# -----------------------------
+# Step 5: Install icon
+# appimagetool requires a PNG in the AppDir root — rasterize SVG with magick
+# SVG is also kept in hicolor for the installed .desktop entry
+# -----------------------------
+ICON_SVG="icons/scalable/apps/fittsmon-gui.svg"
+ICON_PNG="$WORKDIR/fittsmon-gui.png"
+
+if [ -f "$ICON_SVG" ]; then
+    cp "$ICON_SVG" "$APPDIR/usr/share/icons/hicolor/scalable/apps/fittsmon-gui.svg"
+    echo "Rasterizing SVG icon to PNG (256x256)..."
+    magick -background none "$ICON_SVG" -resize 256x256 "$ICON_PNG"
+else
+    echo "No SVG icon found — generating placeholder PNG..."
+    magick -size 256x256 xc:"#2d2d2d" -font "DejaVu-Sans" -pointsize 48 \
+        -fill white -gravity center -annotate 0 "FM" "$ICON_PNG"
+fi
+
+cp "$ICON_PNG" "$APPDIR/fittsmon-gui.png"
+
+# -----------------------------
+# Step 6: Create desktop file
+# -----------------------------
+DESKTOP_FILE="$APPDIR/usr/share/applications/org.fittsmon.FittsmonGui.desktop"
+cat > "$DESKTOP_FILE" << EOF
+[Desktop Entry]
+Name=fittsmon-gui
+Comment=Configure fittsmon screen corner hotspots
+Exec=fittsmon-gui
+Icon=fittsmon-gui
+Type=Application
+Terminal=false
+Categories=Utility;
+X-AppImage-Version=$VERSION_CLEAN
+EOF
+
+cp "$DESKTOP_FILE" "$APPDIR/$(basename "$DESKTOP_FILE")"
+
+# -----------------------------
+# Step 7: Create AppStream metadata
+# -----------------------------
+cat > "$APPDIR/usr/share/metainfo/org.fittsmon.FittsmonGui.appdata.xml" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop">
+  <id>org.fittsmon.FittsmonGui.desktop</id>
+  <name>fittsmon-gui</name>
+  <summary>Configure fittsmon screen corner hotspots</summary>
+  <description>
+    <p>Lightweight GTK3 GUI to configure fittsmon screen-corner and screen-edge hotspots. Requires the fittsmon daemon.</p>
+  </description>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+  <url type="homepage">https://github.com/musqz/fittsmon-gui</url>
+  <url type="bugtracker">https://github.com/musqz/fittsmon-gui/issues</url>
+  <icon type="stock">fittsmon-gui</icon>
+  <launchable type="desktop-id">org.fittsmon.FittsmonGui.desktop</launchable>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <developer id="org.fittsmon">
+    <name>Musqz</name>
+  </developer>
+  <content_rating type="oars-1.1" />
+</component>
+EOF
+
+# -----------------------------
+# Step 8: Create AppRun
+# -----------------------------
+cat > "$APPDIR/AppRun" << 'EOF'
+#!/bin/bash
+HERE="$(dirname "$(readlink -f "$0")")"
+exec python3 "$HERE/usr/bin/fittsmon-gui" "$@"
+EOF
+chmod +x "$APPDIR/AppRun"
+
+# -----------------------------
+# Step 9: Check runtime deps
+# -----------------------------
+echo "Checking runtime dependencies..."
+python3 -c "import gi; gi.require_version('Gtk', '3.0'); from gi.repository import Gtk" \
+    || { echo "ERROR: python3-gi / GTK3 not found on build host. Install it first."; exit 1; }
+
+# -----------------------------
+# Step 10: Build AppImage
+# -----------------------------
+echo "Building AppImage..."
+ARCH=x86_64 appimagetool "$APPDIR" "$WORKDIR/FittsmonGui-$VERSION_CLEAN-x86_64.AppImage"
+chmod +x "$WORKDIR/FittsmonGui-$VERSION_CLEAN-x86_64.AppImage"
+
+echo "✅ Done! AppImage created at: $WORKDIR/FittsmonGui-$VERSION_CLEAN-x86_64.AppImage"
